@@ -1,8 +1,8 @@
-name: 📊 自选股收盘分析 17:30
+name: 📊 自选股收盘分析 16:10
 
 on:
   schedule:
-    - cron: '30 9 * * *'   # 17:30 CST (UTC+8)
+    - cron: '10 8 * * *'   # 16:10 CST (UTC+8)
   workflow_dispatch:
 
 jobs:

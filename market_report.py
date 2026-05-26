@@ -186,6 +186,78 @@ def fetch_cls_news(num: int = 8) -> list:
     return []
 
 
+def fetch_longbridge(mode: str) -> str:
+    """从长桥OpenAPI获取行情数据作为补充"""
+    app_key = os.environ.get("LONGBRIDGE_APP_KEY", "")
+    app_secret = os.environ.get("LONGBRIDGE_APP_SECRET", "")
+    access_token = os.environ.get("LONGBRIDGE_ACCESS_TOKEN", "")
+
+    if not all([app_key, app_secret, access_token]):
+        return ""
+
+    try:
+        from longbridge.openapi import QuoteContext, Config
+    except ImportError:
+        return ""
+
+    try:
+        config = Config(app_key, app_secret, access_token)
+        ctx = QuoteContext(config)
+
+        symbols = [
+            "000001.SH", "399001.SZ", "399006.SZ",
+            "HSI.HK", "HSTECH.HK",
+            "DJI.US", "IXIC.US", "INX.US",
+        ]
+
+        if mode in ("afternoon", "evening"):
+            symbols += ["600519.SH", "300750.SZ", "000858.SZ",
+                        "00700.HK", "09988.HK", "09961.HK", "01810.HK", "03690.HK"]
+        if mode in ("morning", "evening"):
+            symbols += ["AAPL.US", "MSFT.US", "NVDA.US", "TSLA.US", "AMZN.US"]
+
+        resp = ctx.get_quote(symbols)
+
+        output = {"沪深": [], "港股": [], "美股": []}
+        lb_names = {
+            "000001.SH": "上证指数", "399001.SZ": "深证成指", "399006.SZ": "创业板指",
+            "HSI.HK": "恒生指数", "HSTECH.HK": "恒生科技",
+            "DJI.US": "道琼斯", "IXIC.US": "纳斯达克", "INX.US": "标普500",
+            "600519.SH": "贵州茅台", "300750.SZ": "宁德时代", "000858.SZ": "五粮液",
+            "00700.HK": "腾讯控股", "09988.HK": "阿里巴巴", "09961.HK": "哔哩哔哩",
+            "01810.HK": "小米集团", "03690.HK": "美团",
+            "AAPL.US": "苹果", "MSFT.US": "微软", "NVDA.US": "英伟达",
+            "TSLA.US": "特斯拉", "AMZN.US": "亚马逊",
+        }
+
+        for quote in resp:
+            sym = quote.symbol
+            name = lb_names.get(sym, sym)
+            price = quote.last_done
+            change_rate = (quote.change_rate * 100) if quote.change_rate is not None else None
+
+            if sym.endswith(".SH") or sym.endswith(".SZ"):
+                bucket = "沪深"
+            elif sym.endswith(".HK"):
+                bucket = "港股"
+            elif sym.endswith(".US"):
+                bucket = "美股"
+            else:
+                continue
+
+            change_str = f"{change_rate:+.2f}%" if change_rate is not None else "-"
+            output[bucket].append(f"  {name:<12} {price:<12} {change_str}")
+
+        lines = ["【长桥行情数据】"]
+        for bucket_name, items in output.items():
+            if items:
+                for item in items:
+                    lines.append(item)
+        return "\n".join(lines)
+    except Exception as e:
+        return f"【长桥】数据获取异常: {str(e)}"
+
+
 def fetch_northbound_flow() -> str:
     """获取北向资金/南向资金数据"""
     cmd = [
@@ -302,6 +374,12 @@ def get_market_data(mode: str) -> str:
     sections.append("【资金流向】")
     sections.append(fetch_northbound_flow())
     sections.append("")
+
+    # 长桥行情数据（补充）
+    lb = fetch_longbridge(mode)
+    if lb:
+        sections.append(lb)
+        sections.append("")
 
     # 财联社快讯
     cls_news = fetch_cls_news(8)

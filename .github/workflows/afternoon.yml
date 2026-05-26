@@ -1,0 +1,20 @@
+name: 📊 A股收盘 15:15
+
+on:
+  schedule:
+    - cron: '15 7 * * *'   # 15:15 CST (UTC+8)
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet --upgrade pip
+      - run: python market_report.py afternoon
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}

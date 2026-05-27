@@ -1,0 +1,47 @@
+name: ✈️ 机票监控（每小时）
+
+on:
+  schedule:
+    - cron: '0 * * * *'      # 每小时运行一次
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 缓存 Playwright Chromium
+        id: cache-chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}
+
+      - name: 安装依赖
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet playwright
+
+      - name: 安装 Chromium
+        if: steps.cache-chromium.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
+
+      - name: 运行机票价格监控
+        run: python flight_monitor.py
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+
+      - name: 持久化历史数据
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add data/flight_history.json
+          git diff --staged --quiet || git commit -m "chore: 更新机票历史价格数据"
+          git push

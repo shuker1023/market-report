@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 机票价格监控：西安→澳洲（悉尼/墨尔本/布里斯班/珀斯）
-通过 Playwright 爬取 Trip.com 航班比价，低于历史均价时 PushPlus 推送微信提醒
+通过 Playwright 爬取 Trip.com 航班比价，低于历史均价时飞书推送提醒
 
 策略：
   1. 每条航线用 Playwright 加载一次 Trip.com 搜索页
   2. 从 DOM 提取航班价格（一个月内多个日期）
   3. 记录最低价与均价，与历史均价对比
-  4. 低于历史均价 5% 以上时触发 PushPlus 告警
+  4. 低于历史均价 5% 以上时触发飞书告警
   5. 每次运行后更新 data/flight_history.json
 
 数据源说明：
@@ -17,13 +17,14 @@
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 CST = timezone(timedelta(hours=8))
 
-PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "")
+FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 HISTORY_FILE = Path(__file__).parent / "data" / "flight_history.json"
 
 ROUTES = [
@@ -166,34 +167,42 @@ def scrape_route(from_code: str, to_code: str, date_from: str) -> list:
 
 
 # -----------------------------------------------
-# PushPlus 推送
+# 飞书推送
 # -----------------------------------------------
 
-def pushplus_send(title: str, content: str, template: str = "markdown"):
-    if not PUSHPLUS_TOKEN:
-        print("  [PushPlus] 未设置 PUSHPLUS_TOKEN", file=sys.stderr)
-        return False
+def send_to_feishu(content: str, title: str):
+    if not FEISHU_WEBHOOK:
+        print("  [飞书] 未设置 FEISHU_WEBHOOK", file=sys.stderr)
+        return
 
-    payload = {
-        "token": PUSHPLUS_TOKEN,
-        "title": title,
-        "content": content,
-        "template": template,
+    card = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": title}
+            },
+            "elements": [
+                {"tag": "markdown", "content": content},
+                {
+                    "tag": "note",
+                    "elements": [
+                        {"tag": "plain_text", "content": f"自动生成 · {datetime.now(CST).strftime('%Y-%m-%d %H:%M')}"}
+                    ]
+                },
+            ]
+        }
     }
     try:
-        req = urllib.request.Request(
-            "https://www.pushplus.plus/send",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+        result = subprocess.run(
+            ["curl", "-s", "-X", "POST",
+             "-H", "Content-Type: application/json",
+             "-d", json.dumps(card, ensure_ascii=False),
+             FEISHU_WEBHOOK],
+            capture_output=True, text=True, timeout=15
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read())
-        ok = result.get("code") == 200
-        print(f"  [PushPlus] {'✓' if ok else '✗'}: {title}")
-        return ok
+        print(f"  [飞书] 响应: {result.stdout[:100]}")
     except Exception as e:
-        print(f"  [PushPlus] 异常: {e}", file=sys.stderr)
-        return False
+        print(f"  [飞书] 发送异常: {e}", file=sys.stderr)
 
 
 # -----------------------------------------------
@@ -201,8 +210,6 @@ def pushplus_send(title: str, content: str, template: str = "markdown"):
 # -----------------------------------------------
 
 def run_monitor() -> str:
-    import urllib.request  # noqa: F401 — used by pushplus
-
     today = datetime.now(CST)
     today_str = today.strftime("%Y-%m-%d")
     date_from = (today + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -266,22 +273,22 @@ def run_monitor() -> str:
 
     # 低价告警
     if alerts:
-        alert_lines = ["## 🎯 发现低价机票\n"]
+        alert_lines = ["**🎯 发现低价机票**\n"]
         for a in alerts:
             ratio = (1 - a["current_avg"] / a["hist_avg"]) * 100
-            alert_lines.append(f"### {a['route']}")
+            alert_lines.append(f"**{a['route']}**")
             alert_lines.append(f"- 当前均价: ¥{a['current_avg']:.0f}")
             alert_lines.append(f"- 历史均价: ¥{a['hist_avg']:.0f}")
             alert_lines.append(f"- 最低: ¥{a['min_price']}")
             alert_lines.append(f"- 低于历史 {ratio:.1f}%")
-        pushplus_send("🎯 机票低价提醒", "\n".join(alert_lines))
+        send_to_feishu("\n".join(alert_lines), "🎯 机票低价提醒")
 
     return report
 
 
 def main():
-    if not PUSHPLUS_TOKEN:
-        print("⚠ 未设置 PUSHPLUS_TOKEN，推送将跳过")
+    if not FEISHU_WEBHOOK:
+        print("⚠ 未设置 FEISHU_WEBHOOK，推送将跳过")
 
     print(f"[{datetime.now(CST).strftime('%H:%M:%S')}] 开始机票价格监控...")
     report = run_monitor()
@@ -289,7 +296,7 @@ def main():
     print(report)
 
     # 每日例行推送（无论有无低价）
-    pushplus_send("✈️ 西安→澳洲 机票价格日报", report)
+    send_to_feishu(report, "✈️ 西安→澳洲 机票价格日报")
     print("✅ 完成")
 
 

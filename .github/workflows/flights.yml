@@ -36,7 +36,7 @@ jobs:
       - name: 运行机票价格监控
         run: python flight_monitor.py
         env:
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
 
       - name: 持久化历史数据
         run: |

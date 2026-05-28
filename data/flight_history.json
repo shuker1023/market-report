@@ -1,4 +1,45 @@
 {
-  "routes": {},
-  "last_updated": "2026-05-28"
+  "routes": {
+    "XIY-SYD": {
+      "prices": [
+        {
+          "date": "2026-05-29",
+          "avg": 10690.0,
+          "min": 7746
+        }
+      ],
+      "avg_price": 10690.0
+    },
+    "XIY-MEL": {
+      "prices": [
+        {
+          "date": "2026-05-29",
+          "avg": 14577.0,
+          "min": 8105
+        }
+      ],
+      "avg_price": 14577.0
+    },
+    "XIY-BNE": {
+      "prices": [
+        {
+          "date": "2026-05-29",
+          "avg": 14983.0,
+          "min": 6494
+        }
+      ],
+      "avg_price": 14983.0
+    },
+    "XIY-PER": {
+      "prices": [
+        {
+          "date": "2026-05-29",
+          "avg": 14738.0,
+          "min": 5954
+        }
+      ],
+      "avg_price": 14738.0
+    }
+  },
+  "last_updated": "2026-05-29"
 }

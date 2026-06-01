@@ -583,7 +583,7 @@ def generate_content(market_data: str, mode: str) -> str:
 4. 格式：先用"【文章】"标记文章，再用"【口播】"标记口播稿
 
 注意：直接输出内容，不要额外解释。"""
-    else:  # evening
+    elif mode == "evening":
         prompt = f"""你是一个专业的财经分析师。基于以下今天的最新市场数据，写一篇港股收盘复盘+美股盘前分析和60秒口播稿。
 
 当前时间是下午16:30，内容侧重：港股收盘 + 美股盘前

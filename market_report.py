@@ -922,6 +922,11 @@ def main():
             print("  Or set MODE env var")
             sys.exit(1)
         mode = sys.argv[1]
+
+    # 自动切换：如果 evening 模式且当前是周五，自动改为 weekly
+    if mode == "evening" and datetime.now(CST).weekday() == 4:
+        print("  🔄 今天是周五，自动切换为 weekly 模式")
+        mode = "weekly" 
     titles = {
         "morning": "📊 每日财经早报 7:00",
         "afternoon": "📊 A股收盘复盘 15:15",

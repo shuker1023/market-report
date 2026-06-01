@@ -923,6 +923,11 @@ def main():
             sys.exit(1)
         mode = sys.argv[1]
 
+    # 强制 weekly 模式（通过环境变量 FORCE_WEEKLY=true）
+    if os.environ.get("FORCE_WEEKLY", "").lower() in ("true", "1", "yes"):
+        print("  🔄 FORCE_WEEKLY 已设置，切换到 weekly 模式")
+        mode = "weekly"
+
     # 自动切换：如果 evening 模式且当前是周五，自动改为 weekly
     if mode == "evening" and datetime.now(CST).weekday() == 4:
         print("  🔄 今天是周五，自动切换为 weekly 模式")

@@ -923,6 +923,20 @@ def main():
             sys.exit(1)
         mode = sys.argv[1]
 
+    # 从 data/mode_override.txt 读取模式覆盖
+    mode_file = os.path.join(os.path.dirname(__file__), "data", "mode_override.txt") if __file__ else "data/mode_override.txt"
+    if os.path.exists(mode_file):
+        try:
+            with open(mode_file, "r") as f:
+                overridden = f.read().strip()
+            if overridden in ("morning", "afternoon", "evening", "weekly"):
+                print(f"  🔄 检测到 data/mode_override.txt，覆盖模式为: {overridden}")
+                mode = overridden
+                # 使用后删除文件，防止下次误用
+                os.remove(mode_file)
+        except Exception as e:
+            print(f"  ⚠️ 读取 mode_override.txt 失败: {e}")
+
     # 强制 weekly 模式（通过环境变量 FORCE_WEEKLY=true）
     if os.environ.get("FORCE_WEEKLY", "").lower() in ("true", "1", "yes"):
         print("  🔄 FORCE_WEEKLY 已设置，切换到 weekly 模式")

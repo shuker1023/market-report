@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 市场数据采集 + DeepSeek 生成 + 飞书推送
-v2 — 修复数据源不稳定、模型名错误、数据校验缺失三大问题
+v3 — 切换腾讯行情为主要数据源，东方财富为备用
 """
-
 import json
 import os
 import sys
 import re
 import urllib.request
 import urllib.parse
+import urllib.error
 from datetime import datetime, timezone, timedelta
 
 CST = timezone(timedelta(hours=8))
@@ -19,70 +19,262 @@ CST = timezone(timedelta(hours=8))
 # ============================================================
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-# 【修复1】改为正确的模型名（deepseek-chat 是 V3 系列的最新通用模型）
-# 如果用的是 R1 模型可以改为 "deepseek-reasoner"
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
 # 各市场指数
 A_SHARE_INDICES = {
-    "000001": "上证指数",
-    "399001": "深证成指",
-    "399006": "创业板指",
+    "sh000001": "上证指数",
+    "sz399001": "深证成指",
+    "sz399006": "创业板指",
 }
 
 HK_INDICES = {
-    "HSI": "恒生指数",
-    "HSTECH": "恒生科技指数",
+    "szHSI": "恒生指数",
+    "szHSTECH": "恒生科技指数",
 }
 
 US_INDICES_SP = {
-    ".DJI": "道琼斯指数",
-    ".IXIC": "纳斯达克指数",
-    ".INX": "标普500指数",
+    "usDJI": "道琼斯指数",
+    "usIXIC": "纳斯达克指数",
+    "usINX": "标普500指数",
 }
 
 # 热门个股
 A_SHARE_HOT = {
-    "600036": "招商银行",
-    "600519": "贵州茅台",
-    "601318": "中国平安",
-    "300750": "宁德时代",
-    "000858": "五粮液",
+    "sh600036": "招商银行",
+    "sh600519": "贵州茅台",
+    "sh601318": "中国平安",
+    "sz300750": "宁德时代",
+    "sz000858": "五粮液",
 }
 
 HK_HOT = {
-    "00700": "腾讯控股",
-    "09988": "阿里巴巴",
-    "09961": "哔哩哔哩",
-    "01810": "小米集团",
-    "03690": "美团",
+    "sz00700": "腾讯控股",
+    "sz09988": "阿里巴巴",
+    "sz09961": "哔哩哔哩",
+    "sz01810": "小米集团",
+    "sz03690": "美团",
 }
 
 US_HOT = {
-    "aapl": "苹果(AAPL)",
-    "msft": "微软(MSFT)",
-    "nvda": "英伟达(NVDA)",
-    "tsla": "特斯拉(TSLA)",
-    "amzn": "亚马逊(AMZN)",
+    "usaapl": "苹果(AAPL)",
+    "usmsft": "微软(MSFT)",
+    "usnvda": "英伟达(NVDA)",
+    "ustsla": "特斯拉(TSLA)",
+    "usamzn": "亚马逊(AMZN)",
 }
 
 
 # ============================================================
-# 【修复2】改用东方财富接口 — 对程序访问更友好，无需解析 JS 变量
+# 腾讯行情 API (主数据源)
 # ============================================================
 
-def fetch_eastmoney_indices(codes: dict, prefix: str = "1") -> dict:
+def fetch_qq_data(codes: list) -> dict:
     """
-    从东方财富获取指数/股票行情
-    prefix: 1=上交所, 0=深交所
-    东方财富接口返回 JSON，比新浪更稳定
+    从腾讯行情获取数据
+    接口: qt.gtimg.cn/q=code1,code2,...
+    返回格式: v_code1="fields..."; v_code2="fields...";
+    关键字段索引(以分号分隔):
+      3=最新价, 4=昨收, 5=今开,
+      29=涨跌额, 30=涨跌幅%,
+      32=最高, 33=最低
+    编码: GBK
     """
-    sid_list = [f"{prefix}.{code}" for code in codes]
-    secids = ",".join(sid_list)
+    if not codes:
+        return {}
+    qstring = ",".join(codes)
+    url = f"https://qt.gtimg.cn/q={qstring}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://qt.gtimg.cn/",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            # Tencent returns GBK encoding
+            text = raw.decode("gbk", errors="ignore")
+    except Exception as e:
+        return {}
+
+    result = {}
+    # Each line: v_code="field1~field2~..."
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line or not line.startswith("v_"):
+            continue
+        # Extract the quoted string
+        m = re.match(r'v_\w+="(.+)"', line)
+        if not m:
+            continue
+        fields = m.group(1).split("~")
+        if len(fields) < 34:
+            continue
+        code = fields[2]  # market code
+        name = fields[1]  # name
+        price = fields[3] if fields[3] not in ("", "0.00") else "-"
+        prev_close = fields[4] if fields[4] not in ("", "0.00") else "-"
+        open_ = fields[5] if fields[5] not in ("", "0.00") else "-"
+        change_amount = fields[29] if fields[29] not in ("", "0.00") else "-"
+        change_pct = fields[30] if fields[30] not in ("", "0.00") else "-"
+        high = fields[32] if fields[32] not in ("", "0.00") else "-"
+        low = fields[33] if fields[33] not in ("", "0.00") else "-"
+
+        parsed = {
+            "code": code,
+            "name": name,
+            "price": price,
+            "prev_close": prev_close,
+            "open": open_,
+            "change_amount": change_amount,
+            "change_pct": change_pct,
+            "high": high,
+            "low": low,
+        }
+        result[code] = parsed
+    return result
+
+
+def map_qq_result(qq_data: dict, codes: dict) -> dict:
+    """将腾讯行情结果映射到统一格式，codes 的 key 是 Tencent 格式的 code"""
+    result = {}
+    for tcode, cname in codes.items():
+        # Extract the numeric part from tcode (e.g., "sh000001" -> "000001")
+        m = re.search(r"(\d+)$", tcode)
+        num_code = m.group(1) if m else tcode
+        if num_code in qq_data:
+            info = qq_data[num_code]
+            result[tcode] = {
+                "name": cname,
+                "code": num_code,
+                "price": info.get("price", "-"),
+                "change_pct": info.get("change_pct", "-"),
+                "change_amount": info.get("change_amount", "-"),
+                "high": info.get("high", "-"),
+                "low": info.get("low", "-"),
+                "open": info.get("open", "-"),
+                "prev_close": info.get("prev_close", "-"),
+            }
+        else:
+            result[tcode] = {"name": cname, "code": num_code, "error": "no data"}
+    return result
+
+
+def get_a_share_data() -> dict:
+    """获取A股指数 — 腾讯主 + 东方财富备"""
+    print("  📡 获取 A股指数 (腾讯行情)...")
+    qq = fetch_qq_data(list(A_SHARE_INDICES.keys()))
+    result = map_qq_result(qq, A_SHARE_INDICES)
+    if validate_market_data(result, "A股指数(腾讯)"):
+        return result
+
+    # Fallback: 东方财富
+    print("  ⚠️ 腾讯A股指数失败，切换东方财富...")
+    return get_a_share_eastmoney()
+
+
+def get_a_share_eastmoney() -> dict:
+    """东方财富备选 — A股指数"""
+    sh = fetch_eastmoney_indices(
+        {k: v for k, v in A_SHARE_INDICES.items() if k.startswith("sh")},
+        prefix="1",
+        code_map={"sh": ""},
+    )
+    sz = fetch_eastmoney_indices(
+        {k: v for k, v in A_SHARE_INDICES.items() if k.startswith("sz")},
+        prefix="0",
+        code_map={"sz": ""},
+    )
+    result = {**sh, **sz}
+    if not validate_market_data(result, "A股指数(东方财富)"):
+        print("  ❌ A股指数所有数据源均失败")
+        sys.exit(1)
+    return result
+
+
+def get_a_hot_data() -> dict:
+    """获取A股热门个股 — 腾讯主 + 东方财富备"""
+    print("  📡 获取 A股热门个股 (腾讯行情)...")
+    qq = fetch_qq_data(list(A_SHARE_HOT.keys()))
+    result = map_qq_result(qq, A_SHARE_HOT)
+    if validate_market_data(result, "A股热门(腾讯)"):
+        return result
+    print("  ⚠️ 腾讯A股个股失败，切换东方财富...")
+    return fetch_eastmoney_stocks(A_SHARE_HOT)
+
+
+def get_hk_data() -> dict:
+    """获取港股指数"""
+    print("  📡 获取港股指数 (腾讯行情)...")
+    qq = fetch_qq_data(list(HK_INDICES.keys()))
+    result = map_qq_result(qq, HK_INDICES)
+    if validate_market_data(result, "港股指数(腾讯)"):
+        return result
+    print("  ⚠️ 腾讯港股指数失败，切换东方财富...")
+    return fetch_eastmoney_hk(HK_INDICES)
+
+
+def get_hk_hot_data() -> dict:
+    """获取港股热门个股"""
+    print("  📡 获取港股热门个股 (腾讯行情)...")
+    qq = fetch_qq_data(list(HK_HOT.keys()))
+    result = map_qq_result(qq, HK_HOT)
+    if validate_market_data(result, "港股热门(腾讯)"):
+        return result
+    print("  ⚠️ 腾讯港股个股失败，切换东方财富...")
+    return fetch_eastmoney_hk(HK_HOT)
+
+
+def get_us_data() -> dict:
+    """获取美股指数"""
+    print("  📡 获取美股指数 (腾讯行情)...")
+    qq = fetch_qq_data(list(US_INDICES_SP.keys()))
+    result = map_qq_result(qq, US_INDICES_SP)
+    if validate_market_data(result, "美股指数(腾讯)"):
+        return result
+    print("  ⚠️ 腾讯美股指数失败，切换东方财富...")
+    return fetch_us_stocks(US_INDICES_SP)
+
+
+def get_us_hot_data() -> dict:
+    """获取美股热门个股"""
+    print("  📡 获取美股热门个股 (腾讯行情)...")
+    qq = fetch_qq_data(list(US_HOT.keys()))
+    result = map_qq_result(qq, US_HOT)
+    if validate_market_data(result, "美股热门(腾讯)"):
+        return result
+    print("  ⚠️ 腾讯美股个股失败，切换东方财富...")
+    return fetch_us_stocks(US_HOT)
+
+
+# ============================================================
+# 东方财富 API (备用)
+# ============================================================
+
+def fetch_eastmoney_indices(codes: dict, prefix: str = "1", code_map: dict = None) -> dict:
+    """
+    从东方财富获取指数/股票行情 (备用)
+    codes: dict with Tencent-format keys -> name
+    """
+    # Build secids from the numeric part of each code
+    secid_list = []
+    code_to_key = {}
+    for tcode, name in codes.items():
+        m = re.search(r"(\d+)$", tcode)
+        num_code = m.group(1) if m else tcode
+        secid = f"{prefix}.{num_code}"
+        secid_list.append(secid)
+        code_to_key[secid] = tcode
+
+    if not secid_list:
+        return {}
+
     url = (
         f"https://push2.eastmoney.com/api/qt/ulist.np/get"
         f"?fltt=2&invt=2&fields=f2,f3,f4,f12,f14,f15,f16,f17,f18"
-        f"&secids={secids}"
+        f"&secids={','.join(secid_list)}"
     )
     req = urllib.request.Request(
         url,
@@ -95,23 +287,25 @@ def fetch_eastmoney_indices(codes: dict, prefix: str = "1") -> dict:
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = json.loads(resp.read())
     except Exception as e:
-        return {code: {"error": str(e), "name": name, "code": code} for code, name in codes.items()}
+        return {tcode: {"error": str(e), "name": name, "code": tcode} for tcode, name in codes.items()}
 
-    data = {}
+    result = {}
     items = raw.get("data", {}).get("diff", []) if raw.get("data") else []
     for item in items:
-        code = str(item.get("f12", ""))
-        if code in codes:
-            f2 = item.get("f2")   # 最新价
-            f3 = item.get("f3")   # 涨跌幅%
-            f4 = item.get("f4")   # 涨跌额
-            f15 = item.get("f15") # 最高
-            f16 = item.get("f16") # 最低
-            f17 = item.get("f17") # 今开
-            f18 = item.get("f18") # 昨收
-            parsed = {
-                "name": codes[code],
-                "code": code,
+        f12 = str(item.get("f12", ""))
+        secid = f"{prefix}.{f12}"
+        tcode = code_to_key.get(secid)
+        if tcode and tcode in codes:
+            f2 = item.get("f2")
+            f3 = item.get("f3")
+            f4 = item.get("f4")
+            f15 = item.get("f15")
+            f16 = item.get("f16")
+            f17 = item.get("f17")
+            f18 = item.get("f18")
+            result[tcode] = {
+                "name": codes[tcode],
+                "code": f12,
                 "price": f2 if f2 is not None else "-",
                 "change_pct": f3 if f3 is not None else "-",
                 "change_amount": f4 if f4 is not None else "-",
@@ -120,44 +314,103 @@ def fetch_eastmoney_indices(codes: dict, prefix: str = "1") -> dict:
                 "open": f17 if f17 is not None else "-",
                 "prev_close": f18 if f18 is not None else "-",
             }
-            data[code] = parsed
 
-    for code in codes:
-        if code not in data:
-            data[code] = {"name": codes[code], "code": code, "error": "no data"}
-    return data
+    for tcode in codes:
+        if tcode not in result:
+            result[tcode] = {"name": codes[tcode], "code": tcode, "error": "no data"}
+    return result
 
 
 def fetch_eastmoney_hk(codes: dict) -> dict:
-    """港股使用东方财富港股接口 (secid=128.xxxx)"""
-    return fetch_eastmoney_indices(codes, prefix="128")
+    """港股使用东方财富港股接口"""
+    # For HK stocks through eastmoney, we use prefix "128"
+    secid_list = []
+    code_to_key = {}
+    for tcode, name in codes.items():
+        m = re.search(r"(\d+)$", tcode)
+        num_code = m.group(1) if m else tcode
+        secid = f"128.{num_code}"
+        secid_list.append(secid)
+        code_to_key[secid] = tcode
+
+    if not secid_list:
+        return {}
+
+    url = (
+        f"https://push2.eastmoney.com/api/qt/ulist.np/get"
+        f"?fltt=2&invt=2&fields=f2,f3,f4,f12,f14,f15,f16,f17,f18"
+        f"&secids={','.join(secid_list)}"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://quote.eastmoney.com/",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read())
+    except Exception as e:
+        return {tcode: {"error": str(e), "name": name, "code": tcode} for tcode, name in codes.items()}
+
+    result = {}
+    items = raw.get("data", {}).get("diff", []) if raw.get("data") else []
+    for item in items:
+        f12 = str(item.get("f12", ""))
+        secid = f"128.{f12}"
+        tcode = code_to_key.get(secid)
+        if tcode and tcode in codes:
+            f2 = item.get("f2")
+            f3 = item.get("f3")
+            result[tcode] = {
+                "name": codes[tcode],
+                "code": f12,
+                "price": f2 if f2 is not None else "-",
+                "change_pct": f3 if f3 is not None else "-",
+            }
+
+    for tcode in codes:
+        if tcode not in result:
+            result[tcode] = {"name": codes[tcode], "code": tcode, "error": "no data"}
+    return result
 
 
 def fetch_eastmoney_stocks(codes: dict) -> dict:
-    """A股个股，分别处理沪市(1.)和深市(0.)"""
-    sh_codes = {k: v for k, v in codes.items() if k.startswith("6")}
-    sz_codes = {k: v for k, v in codes.items() if not k.startswith("6")}
+    """A股个股备用"""
+    # Map Tencent format codes to eastmoney prefixes
+    sh_codes = {}
+    sz_codes = {}
+    for tcode, name in codes.items():
+        m = re.search(r"(\d+)$", tcode)
+        num_code = m.group(1) if m else tcode
+        if tcode.startswith("sh") or num_code.startswith("6"):
+            sh_codes[tcode] = name
+        else:
+            sz_codes[tcode] = name
+
     result = {}
     if sh_codes:
         result.update(fetch_eastmoney_indices(sh_codes, prefix="1"))
     if sz_codes:
         result.update(fetch_eastmoney_indices(sz_codes, prefix="0"))
-    for code in codes:
-        if code not in result:
-            result[code] = {"name": codes[code], "code": code, "error": "no data"}
+    for tcode in codes:
+        if tcode not in result:
+            result[tcode] = {"name": codes[tcode], "code": tcode, "error": "no data"}
     return result
 
 
 def fetch_us_stocks(codes: dict) -> dict:
-    """美股通过东方财富国际接口获取"""
+    """美股备用 — 东方财富国际接口"""
     data = {}
     symbol_to_code = {}
     secids = []
-    for code, name in codes.items():
-        # 东方财富美股 secid 格式
-        sid = f"105.{code}"
+    for tcode, name in codes.items():
+        m = re.search(r"(\w+)$", tcode)
+        sym = m.group(1) if m else tcode
+        sid = f"105.{sym}"
         secids.append(sid)
-        symbol_to_code[sid] = code
+        symbol_to_code[sid] = tcode
 
     if not secids:
         return data
@@ -170,7 +423,7 @@ def fetch_us_stocks(codes: dict) -> dict:
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://quote.eastmoney.com/",
         },
     )
@@ -178,32 +431,31 @@ def fetch_us_stocks(codes: dict) -> dict:
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = json.loads(resp.read())
     except Exception as e:
-        return {code: {"error": str(e), "name": name, "code": code} for code, name in codes.items()}
+        return {tcode: {"error": str(e), "name": name, "code": tcode} for tcode, name in codes.items()}
 
     items = raw.get("data", {}).get("diff", []) if raw.get("data") else []
     for item in items:
-        secid = f"105.{item.get('f12', '')}"
-        code = symbol_to_code.get(secid)
-        if code and code in codes:
+        f12 = str(item.get("f12", ""))
+        secid = f"105.{f12}"
+        tcode = symbol_to_code.get(secid)
+        if tcode and tcode in codes:
             f2 = item.get("f2")
             f3 = item.get("f3")
-            f4 = item.get("f4")
-            data[code] = {
-                "name": codes[code],
-                "code": code,
+            data[tcode] = {
+                "name": codes[tcode],
+                "code": f12,
                 "price": f2 if f2 is not None else "-",
                 "change_pct": f3 if f3 is not None else "-",
-                "change_amount": f4 if f4 is not None else "-",
             }
 
-    for code in codes:
-        if code not in data:
-            data[code] = {"name": codes[code], "code": code, "error": "no data"}
+    for tcode in codes:
+        if tcode not in data:
+            data[tcode] = {"name": codes[tcode], "code": tcode, "error": "no data"}
     return data
 
 
 def fetch_northbound_flow() -> str:
-    """获取北向资金/南向资金数据（东方财富接口，保持原逻辑）"""
+    """获取北向资金/南向资金数据"""
     url = (
         "https://push2.eastmoney.com/api/qt/kamt.kline/get"
         "?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55&klt=1&lmt=2"
@@ -244,7 +496,7 @@ def fetch_northbound_flow() -> str:
 
 
 def fetch_sina_news(num: int = 8) -> list:
-    """从新浪财经获取最新新闻（稳定，保留）"""
+    """从新浪财经获取最新新闻"""
     url = f"https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&k=&num={num}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
@@ -282,7 +534,7 @@ def fetch_cls_news(num: int = 8) -> list:
 
 
 def fetch_longbridge(mode: str) -> str:
-    """从长桥OpenAPI获取行情数据（保留原逻辑）"""
+    """从长桥OpenAPI获取行情数据"""
     app_key = os.environ.get("LONGBRIDGE_APP_KEY", "")
     app_secret = os.environ.get("LONGBRIDGE_APP_SECRET", "")
     access_token = os.environ.get("LONGBRIDGE_ACCESS_TOKEN", "")
@@ -354,11 +606,11 @@ def fetch_longbridge(mode: str) -> str:
 
 
 # ============================================================
-# 【修复3】核心改进：数据校验 — 如果关键数据为空，提前终止
+# 数据校验与格式化
 # ============================================================
 
 def validate_market_data(data: dict, label: str) -> bool:
-    """检查数据是否有效，如果超过一半的条目没有价格数据则返回 False"""
+    """检查数据是否有效"""
     total = len(data)
     if total == 0:
         print(f"  ⚠️ {label}: 无任何数据")
@@ -421,31 +673,21 @@ def get_market_data(mode: str) -> str:
     today = datetime.now(CST).strftime("%Y-%m-%d %H:%M")
     print(f"  📡 数据时间: {today}")
 
-    # 使用东方财富获取 A股指数
-    print("  📡 获取 A股指数...")
-    a_share = fetch_eastmoney_indices(A_SHARE_INDICES, prefix="1")
-    # 上证指数是 1.000001，深证/创业板是 0.399001 / 0.399006
-    # 修正：分别获取
-    a_share_sh = fetch_eastmoney_indices(
-        {k: v for k, v in A_SHARE_INDICES.items() if k.startswith("000")}, prefix="1")
-    a_share_sz = fetch_eastmoney_indices(
-        {k: v for k, v in A_SHARE_INDICES.items() if not k.startswith("000")}, prefix="0")
-    a_share = {**a_share_sh, **a_share_sz}
+    # A股指数 — 腾讯主 + 东方财富备
+    a_share = get_a_share_data()
 
-    if not validate_market_data(a_share, "A股指数"):
-        print("  ❌ A股指数数据异常，终止运行")
-        sys.exit(1)
+    # A股热门个股
+    a_hot = get_a_hot_data()
 
-    print("  📡 获取 A股热门个股...")
-    a_hot = fetch_eastmoney_stocks(A_SHARE_HOT)
-
+    # 港股
     print("  📡 获取港股数据...")
-    hk = fetch_eastmoney_hk(HK_INDICES)
-    hk_hot = fetch_eastmoney_hk(HK_HOT)
+    hk = get_hk_data()
+    hk_hot = get_hk_hot_data()
 
+    # 美股
     print("  📡 获取美股数据...")
-    us = fetch_us_stocks(US_INDICES_SP)
-    us_hot = fetch_us_stocks(US_HOT)
+    us = get_us_data()
+    us_hot = get_us_hot_data()
 
     sections = [f"📊 市场数据报告 — {today}", ""]
 
@@ -455,14 +697,14 @@ def get_market_data(mode: str) -> str:
     sections.append(format_stocks_table(a_hot, "A股热门个股"))
     sections.append("")
 
-    # 港股 (afternoon / evening 模式)
+    # 港股 (evening / afternoon / weekly)
     if mode in ("evening", "afternoon", "weekly"):
         sections.append(format_index_table(hk, "港股指数"))
         sections.append("")
         sections.append(format_stocks_table(hk_hot, "港股热门个股"))
         sections.append("")
 
-    # 美股 (morning / evening 模式)
+    # 美股 (morning / evening / weekly)
     if mode in ("morning", "evening", "weekly"):
         sections.append(format_index_table(us, "美股指数"))
         sections.append("")
@@ -500,7 +742,7 @@ def get_market_data(mode: str) -> str:
 
 
 def call_deepseek(prompt: str) -> str:
-    """调用 DeepSeek API（使用正确的模型名）"""
+    """调用 DeepSeek API"""
     if not DEEPSEEK_API_KEY:
         return "【错误】未设置 DEEPSEEK_API_KEY"
 
@@ -537,7 +779,6 @@ def generate_content(market_data: str, mode: str) -> str:
     weekday = now.weekday()
     weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-    # 判断是否是交易日（周一到周五，且非节假日，简化处理只排除周末）
     is_trading_day = weekday < 5
 
     base_instruction = f"""
@@ -600,8 +841,6 @@ def generate_content(market_data: str, mode: str) -> str:
 4. 格式：先用"【文章】"标记文章，再用"【口播】"标记口播稿
 
 注意：直接输出内容，不要额外解释。"""
-
-
     elif mode == "weekly":
         prompt = f"""你是一个专业的财经分析师。基于以下本周的市场数据，写一篇下周市场展望报告。
 
@@ -676,7 +915,7 @@ def send_to_feishu(content: str, title: str):
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in ("morning", "afternoon", "evening", "weekly"):
-        print("Usage: market_report.py <morning|afternoon|evening>")
+        print("Usage: market_report.py <morning|afternoon|evening|weekly>")
         sys.exit(1)
 
     mode = sys.argv[1]
@@ -684,10 +923,9 @@ def main():
         "morning": "📊 每日财经早报 7:00",
         "afternoon": "📊 A股收盘复盘 15:15",
         "evening": "📊 港股收盘+美股盘前 16:30",
-    "weekly": "📊 下周市场展望 每周五",
+        "weekly": "📊 下周市场展望 每周五",
     }
 
-    # 检查 API Key
     if not DEEPSEEK_API_KEY:
         print("❌ 未设置 DEEPSEEK_API_KEY 环境变量")
         sys.exit(1)

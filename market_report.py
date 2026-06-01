@@ -308,7 +308,7 @@ def fetch_longbridge(mode: str) -> str:
         if mode in ("afternoon", "evening"):
             symbols += ["600519.SH", "300750.SZ", "000858.SZ",
                         "00700.HK", "09988.HK", "09961.HK", "01810.HK", "03690.HK"]
-        if mode in ("morning", "evening"):
+        if mode in ("morning", "evening", "weekly"):
             symbols += ["AAPL.US", "MSFT.US", "NVDA.US", "TSLA.US", "AMZN.US"]
 
         resp = ctx.get_quote(symbols)
@@ -456,14 +456,14 @@ def get_market_data(mode: str) -> str:
     sections.append("")
 
     # 港股 (afternoon / evening 模式)
-    if mode in ("evening", "afternoon"):
+    if mode in ("evening", "afternoon", "weekly"):
         sections.append(format_index_table(hk, "港股指数"))
         sections.append("")
         sections.append(format_stocks_table(hk_hot, "港股热门个股"))
         sections.append("")
 
     # 美股 (morning / evening 模式)
-    if mode in ("morning", "evening"):
+    if mode in ("morning", "evening", "weekly"):
         sections.append(format_index_table(us, "美股指数"))
         sections.append("")
         sections.append(format_stocks_table(us_hot, "美股热门个股"))
@@ -601,6 +601,29 @@ def generate_content(market_data: str, mode: str) -> str:
 
 注意：直接输出内容，不要额外解释。"""
 
+
+    elif mode == "weekly":
+        prompt = f"""你是一个专业的财经分析师。基于以下本周的市场数据，写一篇下周市场展望报告。
+
+当前时间是周五晚间，内容侧重：本周行情回顾 + 下周市场展望
+
+【市场数据】
+{market_data}
+
+{base_instruction}
+
+要求：
+1. **下周展望报告**（约800字）：基于本周全部数据，包含：
+   - 本周A股、港股、美股三大市场行情回顾
+   - 资金流向趋势分析
+   - 本周重大新闻事件解读
+   - 下周各市场走势预测（分别给出A股、港股、美股的判断）
+   - 关键风险提示和关注事件
+2. **60秒口播稿**（约250-300字）：口语化、适合朗读，开头用"各位投资者朋友大家好"
+3. 格式：先用"【文章】"标记文章，再用"【口播】"标记口播稿
+
+注意：直接输出内容，不要额外解释。"""
+
     return call_deepseek(prompt)
 
 
@@ -652,7 +675,7 @@ def send_to_feishu(content: str, title: str):
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("morning", "afternoon", "evening"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("morning", "afternoon", "evening", "weekly"):
         print("Usage: market_report.py <morning|afternoon|evening>")
         sys.exit(1)
 
@@ -661,6 +684,7 @@ def main():
         "morning": "📊 每日财经早报 7:00",
         "afternoon": "📊 A股收盘复盘 15:15",
         "evening": "📊 港股收盘+美股盘前 16:30",
+    "weekly": "📊 下周市场展望 每周五",
     }
 
     # 检查 API Key

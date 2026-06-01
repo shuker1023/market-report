@@ -914,11 +914,14 @@ def send_to_feishu(content: str, title: str):
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("morning", "afternoon", "evening", "weekly"):
-        print("Usage: market_report.py <morning|afternoon|evening|weekly>")
-        sys.exit(1)
-
-    mode = sys.argv[1]
+    # 支持通过环境变量 MODE 或者命令行参数指定模式
+    mode = os.environ.get("MODE", "")
+    if mode not in ("morning", "afternoon", "evening", "weekly"):
+        if len(sys.argv) < 2 or sys.argv[1] not in ("morning", "afternoon", "evening", "weekly"):
+            print("Usage: market_report.py <morning|afternoon|evening|weekly>")
+            print("  Or set MODE env var")
+            sys.exit(1)
+        mode = sys.argv[1]
     titles = {
         "morning": "📊 每日财经早报 7:00",
         "afternoon": "📊 A股收盘复盘 15:15",
